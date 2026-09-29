@@ -23,6 +23,7 @@ import static java.util.stream.Collectors.toMap;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -401,6 +402,16 @@ public final class BazelWorkspaceInfo extends BazelElementInfo {
             return externalRepositoryRuleByName;
         }
 
+        // LOCAL PATCH: '//external:*' is a WORKSPACE-era query. Bazel 9 removed the package entirely
+        // ("//external package is not available since the WORKSPACE file is deprecated") and the query
+        // fails with exit code 7, which used to abort the whole class path initialization. In a Bzlmod
+        // world there are no WORKSPACE repository rules to report, so return an empty map instead.
+        var bazelVersion = getBazelVersion();
+        if ((bazelVersion != null) && bazelVersion.isAtLeast(9, 0, 0)) {
+            LOG.debug("Skipping '//external:*' query on Bazel {} (WORKSPACE support removed).", bazelVersion);
+            return externalRepositoryRuleByName = Collections.emptyMap();
+        }
+
         var workspaceRoot = getWorkspaceFile().getParent();
         var allExternalQuery = new BazelQueryForTargetProtoCommand(
                 workspaceRoot,
@@ -408,7 +419,17 @@ public final class BazelWorkspaceInfo extends BazelElementInfo {
                 false,
                 List.of("--noproto:rule_inputs_and_outputs", "--noproto:locations", "--noproto:default_values"),
                 "Querying for external repositories");
-        var externalRepositories = bazelWorkspace.getCommandExecutor().runQueryWithoutLock(allExternalQuery);
+        Collection<Target> externalRepositories;
+        try {
+            externalRepositories = bazelWorkspace.getCommandExecutor().runQueryWithoutLock(allExternalQuery);
+        } catch (CoreException e) {
+            // LOCAL PATCH: never let this optional lookup kill the class path
+            LOG.warn(
+                "Unable to query for external repositories in workspace '{}'. Assuming there are none. {}",
+                workspaceRoot,
+                e.getMessage());
+            return externalRepositoryRuleByName = Collections.emptyMap();
+        }
 
         return externalRepositoryRuleByName = externalRepositories.stream()
                 .filter(Target::hasRule)

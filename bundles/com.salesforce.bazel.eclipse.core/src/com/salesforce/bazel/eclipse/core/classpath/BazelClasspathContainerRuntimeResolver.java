@@ -10,7 +10,9 @@ import static java.util.stream.Collectors.joining;
 import static org.eclipse.jdt.launching.JavaRuntime.computeUnresolvedRuntimeClasspath;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 import org.eclipse.core.resources.IProject;
@@ -49,6 +51,24 @@ public class BazelClasspathContainerRuntimeResolver
      */
     private static final ThreadLocal<LinkedHashSet<IProject>> stackOfResolvingProjects =
             ThreadLocal.withInitial(LinkedHashSet::new);
+
+    /**
+     * LOCAL PATCH: memo of container resolutions completed during the current (outermost) resolution.
+     * <p>
+     * {@link #stackOfResolvingProjects} is a <em>stack</em>: a project is removed again while unwinding, so the same
+     * project was re-resolved once per distinct path through the dependency graph. With a few hundred projects that is
+     * exponential - the resolver burned CPU and heap for many minutes deserializing the same saved containers over and
+     * over. Results are cached here so every project is resolved at most once per top level request.
+     * </p>
+     */
+    private static final ThreadLocal<Map<IProject, IRuntimeClasspathEntry[]>> resolvedContainersCache =
+            ThreadLocal.withInitial(HashMap::new);
+
+    /**
+     * LOCAL PATCH: counts resolutions skipped because the project was already visited. Kept for diagnostics only - see
+     * the note on caching in {@link #resolveRuntimeClasspathEntry(IRuntimeClasspathEntry, IJavaProject)}.
+     */
+    private static final ThreadLocal<int[]> skippedResolutionCounter = ThreadLocal.withInitial(() -> new int[1]);
 
     private static String extractRealJarName(String jarName) {
         // copied (and adapted) from BlazeJavaWorkspaceImporter
@@ -150,12 +170,15 @@ public class BazelClasspathContainerRuntimeResolver
                         if (processedProjects.add(sourceProject)) {
                             // only resolve and add the projects if it was never attempted before
                             populateWithResolvedProject(resolvedClasspath, sourceProject);
-                        } else if (LOG.isDebugEnabled()) {
-                            LOG.debug(
+                        } else {
+                            skippedResolutionCounter.get()[0]++; // LOCAL PATCH: result is partial, don't cache it
+                            if (LOG.isDebugEnabled()) {
+                                LOG.debug(
                                 "Skipping recursive resolution attempt for project '{}' in thread '{}' ({})",
                                 sourceProject,
                                 Thread.currentThread().getName(),
                                 processedProjects.stream().map(IProject::getName).collect(joining(" > ")));
+                            }
                         }
                         break;
                     }
@@ -191,6 +214,14 @@ public class BazelClasspathContainerRuntimeResolver
         // this method can be entered recursively; luckily only within the same thread
         // therefore we use a ThreadLocal LinkedHashSet to keep track of recursive attempts
         var currentlyResolvingProjects = stackOfResolvingProjects.get();
+
+        // LOCAL PATCH: reuse an already computed result for this project (see resolvedContainersCache)
+        var cache = resolvedContainersCache.get();
+        var cached = cache.get(project.getProject());
+        if (cached != null) {
+            return cached;
+        }
+
         currentlyResolvingProjects.add(project.getProject());
         try {
             var result = new LinkedHashSet<IRuntimeClasspathEntry>(); // insertion order is important but avoid duplicates
@@ -213,12 +244,25 @@ public class BazelClasspathContainerRuntimeResolver
                 }
             }
 
-            return result.toArray(new IRuntimeClasspathEntry[result.size()]);
+            var resolved = result.toArray(new IRuntimeClasspathEntry[result.size()]);
+
+            // LOCAL PATCH: cache unconditionally.
+            //
+            // An intermediate result can be partial: projects already visited on this run are skipped (the visited set
+            // in populateWithSavedContainer is never unwound). That is pre-existing behaviour of this resolver - the
+            // entries are not lost, they are contributed by whichever branch reached the project first and bubble up
+            // into the outermost result. Caching therefore does not change what the top level caller receives, it only
+            // stops the resolver from deserializing the same saved containers once per path through the graph.
+            cache.put(project.getProject(), resolved);
+
+            return resolved;
 
         } finally {
             currentlyResolvingProjects.remove(project.getProject());
             if (currentlyResolvingProjects.isEmpty()) {
                 stackOfResolvingProjects.remove();
+                resolvedContainersCache.remove();
+                skippedResolutionCounter.remove();
             }
         }
     }

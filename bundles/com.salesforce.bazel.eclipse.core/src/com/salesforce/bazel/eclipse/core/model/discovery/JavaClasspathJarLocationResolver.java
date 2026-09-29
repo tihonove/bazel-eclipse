@@ -128,6 +128,24 @@ public class JavaClasspathJarLocationResolver {
     public ClasspathEntry resolveJar(LibraryArtifact jar) {
         // prefer the class jar because this is much better in Eclipse when debugging/stepping through code/code navigation/etc.
         var jarArtifactForIde = jar.getClassJar() != null ? jar.getClassJar() : jar.jarForIntellijLibrary();
+
+        // LOCAL PATCH: the class jar is not always materialised in the configuration the IDE reads.
+        //
+        // Annotation processors (lombok, for instance) are only built in the exec configuration, so the
+        // "processed_*.jar" the aspect reports under bazel-out/<cpu>-fastbuild/bin does not exist on disk
+        // and no output group builds it. Preferring a class jar that is not there drops the library from
+        // the classpath entirely - for lombok that means every @Slf4j/@Value/@Builder in the repo fails to
+        // resolve. Fall back to the interface (header) jar, which is built and is enough for compilation.
+        if ((jar.getClassJar() != null) && !isMaterialised(jarArtifactForIde)) {
+            var interfaceJar = jar.jarForIntellijLibrary();
+            if ((interfaceJar != null) && !interfaceJar.equals(jarArtifactForIde) && isMaterialised(interfaceJar)) {
+                LOG.debug(
+                    "Class jar '{}' is not available on disk, falling back to the interface jar '{}'.",
+                    jarArtifactForIde,
+                    interfaceJar);
+                jarArtifactForIde = interfaceJar;
+            }
+        }
         if (jarArtifactForIde.isMainWorkspaceSourceArtifact()) {
             var jarPath = forPosix(locationDecoder.resolveSource(jarArtifactForIde).toString());
             var sourceJar = jar.getSourceJars().stream().findFirst();
@@ -175,6 +193,20 @@ public class JavaClasspathJarLocationResolver {
             }
         }
         return null;
+    }
+
+    /**
+     * LOCAL PATCH: {@return <code>true</code> if the artifact exists on the local file system}
+     */
+    private boolean isMaterialised(ArtifactLocation artifact) {
+        if (artifact == null) {
+            return false;
+        }
+        if (artifact.isMainWorkspaceSourceArtifact()) {
+            return locationDecoder.resolveSource(artifact).toFile().isFile();
+        }
+        return (locationDecoder.resolveOutput(artifact) instanceof LocalFileArtifact localFile)
+                && localFile.getPath().toFile().isFile();
     }
 
 }

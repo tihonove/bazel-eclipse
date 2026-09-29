@@ -21,8 +21,10 @@ import static java.util.stream.Collectors.toList;
 import static org.eclipse.core.runtime.IPath.forPosix;
 import static org.eclipse.core.runtime.IPath.fromPath;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.NoSuchFileException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Collection;
@@ -549,6 +551,21 @@ public class JavaAspectsClasspathInfo extends JavaClasspathJarLocationResolver {
                                         d.getKind()))
                             .collect(toList());
                 }
+            } catch (NoSuchFileException | FileNotFoundException e) {
+                // LOCAL PATCH: a missing jdeps file must not be fatal.
+                //
+                // The aspect build runs with --keep_going and its result is never checked, and targets
+                // carrying tags = ["manual"] are part of the model but are not always built. Turning the
+                // first missing file into a CoreException fails initializeClasspaths for the entire
+                // workspace, so one unbuilt target leaves every project without a classpath - which looks
+                // like tens of thousands of errors after a sync that reported success.
+                //
+                // Degrade gracefully instead: this target contributes no jdeps-derived dependencies, the
+                // rest of the workspace keeps its classpath.
+                LOG.warn(
+                    "No jdeps file for '{}' (expected at '{}'). The target was likely not built (tags = [\"manual\"] or a partial aspect build); its implicit dependencies will be missing from the classpath.",
+                    targetIdeInfo.getKey(),
+                    jdepsFile);
             } catch (IOException e) {
                 throw new CoreException(Status.error(format("Error reading jdeps file '%s'.", jdepsFile), e));
             }

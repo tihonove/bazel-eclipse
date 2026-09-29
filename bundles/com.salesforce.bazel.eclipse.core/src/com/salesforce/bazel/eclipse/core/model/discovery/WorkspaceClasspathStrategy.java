@@ -29,6 +29,9 @@ import com.salesforce.bazel.eclipse.core.model.discovery.classpath.libs.External
 import com.salesforce.bazel.eclipse.core.model.discovery.classpath.libs.GeneratedLibrariesDiscovery;
 import com.salesforce.bazel.eclipse.core.util.trace.TracingSubMonitor;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * This strategy implements computation of the {@link BazelWorkspace workspace project's} classpath.
  * <p>
@@ -37,6 +40,8 @@ import com.salesforce.bazel.eclipse.core.util.trace.TracingSubMonitor;
  * </p>
  */
 public class WorkspaceClasspathStrategy extends BaseProvisioningStrategy {
+
+    private static Logger LOG = LoggerFactory.getLogger(WorkspaceClasspathStrategy.class);
 
     /** Build Path related Bazel problem */
     String WORKSPACE_BUILDPATH_PROBLEM_MARKER = BUILDPATH_PROBLEM_MARKER + ".workspace_container";
@@ -80,7 +85,19 @@ public class WorkspaceClasspathStrategy extends BaseProvisioningStrategy {
                     result.add(newProjectEntry(bazelProject.getProject()));
 
                     // collect the owner labels so we can avoid duplicate classes later
-                    projectLabels.add(bazelProject.getOwnerLabel().toString());
+                    // LOCAL PATCH: a project may exist without an owner label (eg., a left-over project
+                    // directory in .eclipse/projects from an earlier, aborted sync). That used to NPE here
+                    // and killed the class path of *every* project in the workspace. The label is only used
+                    // for de-duplication below, so skipping it is harmless.
+                    var ownerLabel = bazelProject.getOwnerLabel();
+                    if (ownerLabel != null) {
+                        projectLabels.add(ownerLabel.toString());
+                    } else {
+                        LOG.warn(
+                            "Bazel project '{}' ({}) has no owner label. Ignoring it while collecting workspace project labels.",
+                            bazelProject.getName(),
+                            bazelProject.getProject().getLocation());
+                    }
                 }
             }
 

@@ -19,6 +19,7 @@ import static com.salesforce.bazel.eclipse.core.model.BazelWorkspace.WORKSPACE_B
 import static java.lang.String.format;
 import static java.nio.file.Files.isRegularFile;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collection;
@@ -159,6 +160,31 @@ public final class BazelProjectImporter extends AbstractProjectImporter {
             var importBazelWorkspaceJob = new ImportBazelWorkspaceJob(workspace, projectViewLocation);
             importBazelWorkspaceJob.runInWorkspace(monitor.split(100));
         }
+    }
+
+    /**
+     * Overridden to report folders <em>inside</em> a detected Bazel workspace as resolved.
+     * <p>
+     * {@code AbstractProjectImporter#isResolved(File)} only checks whether {@link #directories} contains the folder
+     * itself. Because {@link BazelFileDetector} walks up to the workspace root, {@link #directories} holds the
+     * <em>repository root</em> and not the folder that was opened. For a multi-root setup (or when a sub directory of
+     * the repository is opened) JDT LS would therefore consider the folder unhandled, continue its importer loop and
+     * let {@code InvisibleProjectImporter} create a second, class path less model on top of the Bazel one.
+     * </p>
+     */
+    @Override
+    public boolean isResolved(File folder) throws OperationCanceledException, CoreException {
+        if ((folder == null) || (directories == null) || directories.isEmpty()) {
+            return false;
+        }
+
+        var folderPath = folder.toPath().toAbsolutePath().normalize();
+        for (Path workspaceRoot : directories) {
+            if (folderPath.startsWith(workspaceRoot.toAbsolutePath().normalize())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override

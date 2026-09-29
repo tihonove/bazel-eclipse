@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Predicate;
 
 import org.eclipse.core.runtime.CoreException;
@@ -42,6 +43,7 @@ import com.google.idea.blaze.base.command.buildresult.OutputArtifact;
 import com.google.idea.blaze.base.command.buildresult.ParsedBepOutput;
 import com.google.idea.blaze.base.command.buildresult.SourceArtifact;
 import com.google.idea.blaze.base.ideinfo.ArtifactLocation;
+import com.google.idea.blaze.base.ideinfo.Dependency;
 import com.google.idea.blaze.base.ideinfo.LibraryArtifact;
 import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
 import com.google.idea.blaze.base.ideinfo.TargetKey;
@@ -75,6 +77,13 @@ public class JavaAspectsInfo extends JavaClasspathJarLocationResolver {
 
     final ParsedBepOutput aspectsBuildResult;
     final IntellijAspects intellijAspects;
+
+    /**
+     * LOCAL PATCH: rules whose own <code>java_ide_info</code> is empty because the generated jars are attached to the
+     * dependencies visited by the rule's own aspect (protobuf's <code>bazel_java_proto_aspect</code>).
+     */
+    private static final Set<String> PROTO_WRAPPER_RULES =
+            Set.of("java_proto_library", "java_lite_proto_library", "java_mutable_proto_library");
 
     /** index of all aspects loaded from the build output */
     final Map<TargetKey, TargetIdeInfo> ideInfoByTargetKey;
@@ -187,6 +196,46 @@ public class JavaAspectsInfo extends JavaClasspathJarLocationResolver {
             collector.visit(runtimeClasspathJars);
         } catch (InterruptedException e) {
             throw new OperationCanceledException("interrupted");
+        }
+
+        indexProtoWrapperJars();
+    }
+
+    /**
+     * LOCAL PATCH: makes dependencies on <code>java_proto_library</code> resolvable.
+     * <p>
+     * With the current protobuf rules a <code>java_proto_library</code> target reports an <em>empty</em>
+     * <code>java_ide_info</code>. The jars with the generated Java code are attached to the <code>proto_library</code>
+     * dependencies, indexed under a target key that also carries the aspect id of protobuf's
+     * <code>bazel_java_proto_aspect</code>. Nothing looked there, so every target depending on a
+     * <code>java_proto_library</code> was left without those jars ("Unable to locate compile jars in index").
+     * </p>
+     */
+    private void indexProtoWrapperJars() {
+        for (TargetIdeInfo targetIdeInfo : List.copyOf(ideInfoByTargetKey.values())) {
+            var targetKey = targetIdeInfo.getKey();
+            if (librariesByTargetKey.containsKey(targetKey)) {
+                continue; // already has jars of its own
+            }
+            var kind = targetIdeInfo.getKind();
+            if ((kind == null) || !PROTO_WRAPPER_RULES.contains(kind.getKindString())) {
+                continue;
+            }
+
+            List<BlazeJarLibrary> jars = new ArrayList<>();
+            for (Dependency dependency : targetIdeInfo.getDependencies()) {
+                var dependencyJars = librariesByTargetKey.get(dependency.getTargetKey());
+                if (dependencyJars != null) {
+                    jars.addAll(dependencyJars);
+                }
+            }
+
+            if (!jars.isEmpty()) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Indexing {} jar(s) from proto dependencies for: {}", jars.size(), targetKey);
+                }
+                librariesByTargetKey.put(targetKey, jars);
+            }
         }
     }
 
