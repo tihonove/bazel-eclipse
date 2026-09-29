@@ -60,6 +60,13 @@ public class BuildFileDigestStore {
 
     private static final String FILE_NAME = "build-file-digests.properties";
 
+    /**
+     * Format marker. Files without it were written by 1.4.4, which recorded the current BUILD files as baseline on
+     * its first run without knowing whether the saved classpaths were computed from them; those entries are discarded.
+     */
+    private static final String FORMAT_KEY = "_format";
+    private static final String FORMAT_VERSION = "2";
+
     private static final Pattern PROJECT_VIEW_IMPORT = Pattern.compile("^\\s*(?:try_)?import\\s*:?\\s*(\\S+)\\s*$");
 
     /**
@@ -188,6 +195,10 @@ public class BuildFileDigestStore {
                 } catch (IOException e) {
                     LOG.warn("Unable to read build file digests from '{}': {}", stateFile, e.getMessage());
                 }
+                if (!FORMAT_VERSION.equals(digests.getProperty(FORMAT_KEY))) {
+                    LOG.info("Discarding build file digests of an older format from '{}'", stateFile);
+                    digests.clear();
+                }
             }
         }
         return digests;
@@ -215,6 +226,7 @@ public class BuildFileDigestStore {
     }
 
     private void save() {
+        digests.setProperty(FORMAT_KEY, FORMAT_VERSION);
         try (OutputStream out = new BufferedOutputStream(new FileOutputStream(stateFile))) {
             digests.store(out, "Digests of BUILD files / project views the Bazel classpath containers were computed from");
         } catch (IOException e) {

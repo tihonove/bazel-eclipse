@@ -208,6 +208,16 @@ public class BazelClasspathManager {
      * @return a saved classpath container for the specified project (may be <code>null</code>)
      * @throws CoreException
      */
+    /**
+     * LOCAL PATCH
+     *
+     * @return the time the saved container state of the project was last written (milliseconds since the epoch),
+     *         <code>0</code> if there is none
+     */
+    public long getSavedContainerTimestamp(IProject project) {
+        return getContainerStateFile(project).lastModified();
+    }
+
     public BazelClasspathContainer getSavedContainer(IProject project) throws CoreException {
         var containerStateFile = getContainerStateFile(project);
         if (!containerStateFile.exists()) {

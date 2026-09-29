@@ -270,6 +270,22 @@ public final class RefreshProjectsJob extends WorkspaceJob {
     }
 
     /**
+     * @return <code>true</code> if any of the files was modified after the given time, or the time is unknown
+     *         (<code>0</code>)
+     */
+    private static boolean isNewerThan(List<Path> files, long timestamp) throws IOException {
+        if (timestamp <= 0) {
+            return true;
+        }
+        for (Path file : files) {
+            if (Files.isRegularFile(file) && (Files.getLastModifiedTime(file).toMillis() > timestamp)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * @return the outcome of the last run (<code>null</code> if the job did not run or failed)
      */
     public Outcome getOutcome() {
@@ -401,6 +417,15 @@ public final class RefreshProjectsJob extends WorkspaceJob {
             var projectViewDigest = BuildFileDigestStore.computeDigest(workspaceProject);
             var recordedProjectViewDigest = digestStore.get(workspaceProject.getName());
             if (recordedProjectViewDigest == null) {
+                // nothing recorded yet: the saved classpaths are only known to match the project view when
+                // none of its files was modified after the classpaths were saved
+                var containerTimestamp = classpathManager.getSavedContainerTimestamp(workspaceProject.getProject());
+                if (isNewerThan(BuildFileDigestStore.getProjectViewFiles(workspace), containerTimestamp)) {
+                    messages.add(
+                        "The project view (.bazelproject) is newer than the saved classpaths; a full synchronization is required.");
+                    outcome = new Outcome(refreshed, List.of(), 0, true, messages);
+                    return Status.warning(messages.get(0));
+                }
                 digestStore.put(workspaceProject.getName(), projectViewDigest);
             } else if (!recordedProjectViewDigest.equals(projectViewDigest)) {
                 messages.add("The project view (.bazelproject) changed; a full synchronization is required.");
@@ -414,7 +439,8 @@ public final class RefreshProjectsJob extends WorkspaceJob {
                 if (project.isWorkspaceProject()) {
                     continue;
                 }
-                var digest = BuildFileDigestStore.computeDigest(project);
+                var buildFile = BuildFileDigestStore.findBuildFile(project);
+                var digest = buildFile != null ? BuildFileDigestStore.computeDigest(List.of(buildFile)) : null;
                 if (digest == null) {
                     messages.add(
                         format(
@@ -425,9 +451,18 @@ public final class RefreshProjectsJob extends WorkspaceJob {
                 }
                 var recorded = digestStore.get(project.getName());
                 if (recorded == null) {
-                    // nothing recorded yet (first run after upgrade): assume the classpath is current
-                    LOG.info("No build file digest recorded for '{}' yet. Recording the current one.", project.getName());
-                    digestStore.put(project.getName(), digest);
+                    // nothing recorded yet (first run after upgrade): the saved classpath was computed from the BUILD
+                    // file only if the file was not modified after the classpath was saved (git sets the
+                    // modification time when a file enters the working tree)
+                    var containerTimestamp = classpathManager.getSavedContainerTimestamp(project.getProject());
+                    if (isNewerThan(List.of(buildFile), containerTimestamp)) {
+                        LOG.info(
+                            "No build file digest recorded for '{}' and its BUILD file is newer than the saved classpath. Treating it as changed.",
+                            project.getName());
+                        changedProjects.add(project);
+                    } else {
+                        digestStore.put(project.getName(), digest);
+                    }
                 } else if (!recorded.equals(digest)) {
                     changedProjects.add(project);
                 }
