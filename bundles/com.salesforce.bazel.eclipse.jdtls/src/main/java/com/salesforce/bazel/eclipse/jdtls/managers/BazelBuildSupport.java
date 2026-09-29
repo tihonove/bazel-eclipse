@@ -27,6 +27,7 @@ import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager.CHANGE_TYPE;
 import com.salesforce.bazel.eclipse.core.BazelCore;
 import com.salesforce.bazel.eclipse.core.model.BazelPackage;
 import com.salesforce.bazel.eclipse.core.model.BazelWorkspace;
+import com.salesforce.bazel.eclipse.core.model.RefreshProjectsJob;
 import com.salesforce.bazel.eclipse.core.model.SynchronizeProjectViewJob;
 
 @SuppressWarnings("restriction")
@@ -110,16 +111,26 @@ public class BazelBuildSupport implements IBuildSupport {
         var bazelProject = BazelCore.create(project);
         var bazelWorkspace = bazelProject.getBazelWorkspace();
 
-        var changed = false;
-        if (bazelProject.isPackageProject()) {
-            changed = digestStore.updateDigest(bazelProject.getBazelPackage().getBuildFile());
-        } else if (bazelProject.isTargetProject()) {
-            changed = digestStore.updateDigest(bazelProject.getBazelTarget().getBazelPackage().getBuildFile());
-        } else {
-            // check both WORKSPACE and .bazelproject
-            changed = digestStore.updateDigest(bazelWorkspace.getWorkspaceFile())
-                    | digestStore.updateDigest(bazelWorkspace.getBazelProjectViewFile());
+        if (bazelProject.isPackageProject() || bazelProject.isTargetProject()) {
+            // LOCAL PATCH: a changed BUILD file of a single package does not need a full synchronization.
+            // Refresh the project from disk, re-provision the package if its BUILD file changed and re-compute
+            // the classpath of the package and everything depending on it.
+            JavaLanguageServerPlugin.logInfo("Starting incremental Bazel update for project " + project.getName());
+            var refreshJob = new RefreshProjectsJob(bazelWorkspace, List.of(bazelProject), true);
+            project.getWorkspace()
+                    .run(refreshJob::runInWorkspace, refreshJob.detectMissingRule(), IWorkspace.AVOID_UPDATE, monitor);
+            var outcome = refreshJob.getOutcome();
+            if ((outcome != null) && outcome.fullSyncRequired()) {
+                JavaLanguageServerPlugin.logInfo(
+                    "Incremental Bazel update of " + project.getName() + " requires a full synchronization: "
+                            + String.join(" ", outcome.messages()));
+            }
+            return;
         }
+
+        // workspace project: check both WORKSPACE and .bazelproject
+        var changed = digestStore.updateDigest(bazelWorkspace.getWorkspaceFile())
+                | digestStore.updateDigest(bazelWorkspace.getBazelProjectViewFile());
 
         if (changed || force) {
             JavaLanguageServerPlugin.logInfo("Starting Bazel update for workspace " + bazelWorkspace.getName());

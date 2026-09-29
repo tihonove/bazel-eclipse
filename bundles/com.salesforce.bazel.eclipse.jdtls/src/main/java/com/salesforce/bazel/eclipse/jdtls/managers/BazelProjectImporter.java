@@ -42,6 +42,7 @@ import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import com.salesforce.bazel.eclipse.core.BazelCore;
 import com.salesforce.bazel.eclipse.core.model.BazelProject;
 import com.salesforce.bazel.eclipse.core.model.BazelWorkspace;
+import com.salesforce.bazel.eclipse.core.model.RefreshProjectsJob;
 import com.salesforce.bazel.eclipse.core.setup.DefaultProjectViewFileInitializer;
 import com.salesforce.bazel.eclipse.core.setup.ImportBazelWorkspaceJob;
 
@@ -140,6 +141,14 @@ public final class BazelProjectImporter extends AbstractProjectImporter {
                     var bazelProject = BazelCore.create(existingWorkspaceProject);
                     if (bazelProject.isWorkspaceProject()
                             && bazelProject.getBazelWorkspace().getLocation().equals(workspaceLocation)) {
+                        // LOCAL PATCH: the workspace was imported in an earlier session. Eclipse only learns about
+                        // file system changes via refresh or file watcher events, and no events exist for changes
+                        // made while the language server was down (branch switch, pull). Bring the projects up to
+                        // date incrementally instead of leaving new files invisible to the compiler.
+                        JavaLanguageServerPlugin.logInfo(
+                            format("Bazel workspace '%s' is already imported. Scheduling an incremental refresh.", workspaceLocation));
+                        new RefreshProjectsJob(bazelProject.getBazelWorkspace(), null /* all projects */, true)
+                                .schedule();
                         continue;
                     }
                 }

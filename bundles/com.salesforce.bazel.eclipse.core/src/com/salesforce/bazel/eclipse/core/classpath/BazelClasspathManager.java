@@ -81,9 +81,39 @@ public class BazelClasspathManager {
     private final File stateLocationDirectory;
     private final BazelModelManager bazelModelManager;
 
+    /** LOCAL PATCH: digests of BUILD files the containers were computed from (incremental refresh) */
+    private final BuildFileDigestStore buildFileDigestStore;
+
     public BazelClasspathManager(File stateLocationDirectory, BazelModelManager bazelModelManager) {
         this.bazelModelManager = bazelModelManager;
         this.stateLocationDirectory = requireNonNull(stateLocationDirectory);
+        this.buildFileDigestStore = new BuildFileDigestStore(stateLocationDirectory);
+    }
+
+    /**
+     * LOCAL PATCH
+     *
+     * @return the store with the digests of the build files the saved containers were computed from
+     */
+    public BuildFileDigestStore getBuildFileDigestStore() {
+        return buildFileDigestStore;
+    }
+
+    /**
+     * LOCAL PATCH: remembers the digest of the build configuration (BUILD file or project view) a project's classpath
+     * was just computed from, so {@link com.salesforce.bazel.eclipse.core.model.RefreshProjectsJob} can detect
+     * changes later.
+     */
+    private void recordBuildFileDigest(IProject project) {
+        try {
+            var bazelProject = bazelModelManager.getBazelProject(project);
+            var digest = BuildFileDigestStore.computeDigest(bazelProject);
+            if (digest != null) {
+                buildFileDigestStore.put(project.getName(), digest);
+            }
+        } catch (CoreException | IOException | RuntimeException e) {
+            LOG.warn("Unable to record build file digest for project '{}': {}", project.getName(), e.getMessage());
+        }
     }
 
     private void configureAttachedSourcesAndJavadoc(ClasspathEntry entry, Properties sourceAttachment) {
@@ -365,6 +395,7 @@ public class BazelClasspathManager {
                     container },
             monitor.slice(1));
         saveContainerState(javaProject.getProject(), container);
+        recordBuildFileDigest(javaProject.getProject());
     }
 
     private void saveContainerState(IProject project, BazelClasspathContainer container) throws CoreException {

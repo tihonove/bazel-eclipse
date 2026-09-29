@@ -6,21 +6,28 @@ package com.salesforce.bazel.eclipse.jdtls.commands;
 import static org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin.logInfo;
 
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.eclipse.core.resources.IContainer;
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.IStatus;
 import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
 
 import com.salesforce.bazel.eclipse.core.BazelCore;
 import com.salesforce.bazel.eclipse.core.BazelCorePlugin;
 import com.salesforce.bazel.eclipse.core.classpath.InitializeOrRefreshClasspathJob;
 import com.salesforce.bazel.eclipse.core.model.BazelWorkspace;
+import com.salesforce.bazel.eclipse.core.model.RefreshProjectsJob;
 import com.salesforce.bazel.eclipse.core.model.SynchronizeProjectViewJob;
 import com.salesforce.bazel.eclipse.jdtls.execution.ReconnectingSocket;
 import com.salesforce.bazel.eclipse.jdtls.execution.StreamingSocketBazelCommandExecutor;
@@ -57,6 +64,9 @@ public class BazelJdtLsDelegateCommandHandler implements IDelegateCommandHandler
                         new SynchronizeProjectViewJob(workspace).schedule();
                     }
                     return new Object();
+                case "java.bazel.refreshProjects":
+                    // LOCAL PATCH: incremental refresh (resources from disk, changed BUILD files, dependent classpaths)
+                    return refreshProjects(monitor);
                 case "java.bazel.connectProcessStreamSocket":
                     var port = 0;
                     var portArg = arguments.get(0);
@@ -82,6 +92,50 @@ public class BazelJdtLsDelegateCommandHandler implements IDelegateCommandHandler
         }
         throw new UnsupportedOperationException(
                 String.format("Bazel JDT LS extension doesn't support the command '%s'.", commandId));
+    }
+
+    /**
+     * LOCAL PATCH: runs {@link RefreshProjectsJob} for every workspace synchronously and reports the outcome.
+     *
+     * @return a map (serialized as JSON for the client) with <code>refreshedProjects</code>,
+     *         <code>reprovisionedProjects</code>, <code>classpathsRefreshed</code>, <code>fullSyncRequired</code> and
+     *         <code>messages</code>
+     */
+    private Map<String, Object> refreshProjects(IProgressMonitor monitor) throws CoreException {
+        var refreshedProjects = 0;
+        var classpathsRefreshed = 0;
+        var fullSyncRequired = false;
+        List<String> reprovisionedProjects = new ArrayList<>();
+        List<String> messages = new ArrayList<>();
+        for (BazelWorkspace workspace : BazelCore.getModel().getBazelWorkspaces()) {
+            var job = new RefreshProjectsJob(workspace, null /* all projects */, true /* check BUILD files */);
+            var status = new IStatus[1];
+            ResourcesPlugin.getWorkspace()
+                    .run(
+                        progress -> status[0] = job.runInWorkspace(progress),
+                        job.detectMissingRule(),
+                        IWorkspace.AVOID_UPDATE,
+                        monitor);
+            if ((status[0] != null) && status[0].matches(IStatus.ERROR)) {
+                throw new CoreException(status[0]);
+            }
+            var outcome = job.getOutcome();
+            if (outcome == null) {
+                continue;
+            }
+            refreshedProjects += outcome.refreshedProjects();
+            classpathsRefreshed += outcome.classpathsRefreshed();
+            fullSyncRequired |= outcome.fullSyncRequired();
+            reprovisionedProjects.addAll(outcome.reprovisionedProjects());
+            messages.addAll(outcome.messages());
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("refreshedProjects", refreshedProjects);
+        result.put("reprovisionedProjects", reprovisionedProjects);
+        result.put("classpathsRefreshed", classpathsRefreshed);
+        result.put("fullSyncRequired", fullSyncRequired);
+        result.put("messages", messages);
+        return result;
     }
 
     private void setReconnectingSocket(ReconnectingSocket reconnectingSocket) {

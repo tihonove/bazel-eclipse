@@ -29,6 +29,9 @@
                id="java.bazel.updateClasspaths">
          </command>
          <command
+               id="java.bazel.refreshProjects">
+         </command>
+         <command
                id="java.bazel.connectProcessStreamSocket">
          </command>
       </delegateCommandHandler>
