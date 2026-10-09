@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
@@ -23,6 +24,8 @@ public class UnixLoginShellFinderTest {
     }
 
     @Test
+    // $SHELL wins over /etc/passwd regardless of the user name, so no exception is possible then
+    @DisabledIfEnvironmentVariable(named = "SHELL", matches = ".*")
     void detectLoginShell_unknonw_users() throws Exception {
         assertThrows(IOException.class, () -> {
             new UnixLoginShellFinder().detectLoginShell("foo-bar-" + System.nanoTime());
