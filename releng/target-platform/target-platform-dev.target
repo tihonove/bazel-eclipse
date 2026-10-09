@@ -273,6 +273,13 @@
           <version>2.4.1</version>
           <type>jar</type>
         </dependency>
+        <!-- fork: needed by the Bazel bundles, JDT LS does not ship it any more -->
+        <dependency>
+          <groupId>org.osgi</groupId>
+          <artifactId>org.osgi.service.event</artifactId>
+          <version>1.4.1</version>
+          <type>jar</type>
+        </dependency>
       </dependencies>
     </location>
   </locations>
