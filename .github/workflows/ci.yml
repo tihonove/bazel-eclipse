@@ -8,9 +8,11 @@ on:
   push:
     branches:
       - 'main'
+      - 'tihonove/bazel9'
   pull_request:
     branches:
       - 'main'
+      - 'tihonove/bazel9'
   workflow_dispatch:
   
 permissions: {}
@@ -23,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest] #, windows-latest] # https://github.com/coactions/setup-xvfb/issues/18
+        os: [ubuntu-latest] # fork: Linux only (upstream also had macos-latest)
 
     steps:
       - name: Checkout
@@ -54,32 +56,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-m2
 
-      - name: Cache IntelliJ Aspects
-        uses: actions/cache@v4
-        with:
-          path: ./bundles/com.salesforce.bazel.sdk/aspects
-          key: ${{ runner.os }}-aspects-${{ hashFiles('**/aspects/import/import-and-build.sh', '**/aspects/import/WORKSPACE') }}
+      # Fork: aspects-1e99c4.zip is committed (patched for Bazel 9, with prebuilt
+      # aspect tools), because import-and-build.sh can no longer build it:
+      # //aspect:aspect_tools depends on a removed IntelliJ EAP snapshot (404).
 
-      - name: Cache  Bazel repository cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/bazel
-            ~/.cache/bazelisk
-            /var/tmp/_bazel_*
-          key: ${{ runner.os }}-bazel
-        
       - name: Setup Bazelisk
         uses: bazelbuild/setup-bazelisk@v3
-
-      - name: Print Maven toolchains.xml
-        shell: bash
-        run: cat ~/.m2/toolchains.xml
-
-      - name: Import IntelliJ Aspects
-        working-directory: ./bundles/com.salesforce.bazel.sdk/aspects/import
-        shell: bash
-        run: ./import-and-build.sh
 
       - name: Build and Test
         uses: coactions/setup-xvfb@v1

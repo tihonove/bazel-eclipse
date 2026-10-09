@@ -43,3 +43,6 @@ pom.tycho
 # other
 *.patch
 offline_project_mgmt.md
+
+# maven wrapper downloads it on demand (wrapperUrl in maven-wrapper.properties)
+.mvn/wrapper/maven-wrapper.jar
